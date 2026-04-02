@@ -140,5 +140,19 @@ export default function GlassesOverlay({ modelPath, landmarksRef, videoRef }: Gl
   )
 }
 
-// Preload model on import
+// Preload all models on import
 useGLTF.preload('/models/aviator_sunglasses.glb')
+useGLTF.preload('/models/glasses-1-.glb')
+useGLTF.preload('/models/glasses-5b.glb')
+useGLTF.preload('/models/glasses-5c.glb')
+useGLTF.preload('/models/glasses-6.glb')
+useGLTF.preload('/models/glasses-7b.glb')
+useGLTF.preload('/models/glasses-7c.glb')
+useGLTF.preload('/models/glasses-8b.glb')
+useGLTF.preload('/models/glasses-8c.glb')
+useGLTF.preload('/models/glasses-9b.glb')
+useGLTF.preload('/models/glasses-9c.glb')
+useGLTF.preload('/models/glasses-10.glb')
+useGLTF.preload('/models/glasses-11b.glb')
+useGLTF.preload('/models/glasses-11c.glb')
+useGLTF.preload('/models/glasses-12.glb')
