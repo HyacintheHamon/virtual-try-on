@@ -24,9 +24,10 @@ interface GlassesModelProps {
   modelPath: string
   landmarksRef: React.MutableRefObject<FaceLandmarkerResult | null>
   videoRef: React.RefObject<HTMLVideoElement | null>
+  rotOffset: [number, number, number]
 }
 
-function GlassesModel({ modelPath, landmarksRef, videoRef }: GlassesModelProps) {
+function GlassesModel({ modelPath, landmarksRef, videoRef, rotOffset }: GlassesModelProps) {
   const gltf = useGLTF(modelPath)
   const groupRef = useRef<THREE.Group>(null)
   const { size } = useThree()
@@ -123,11 +124,13 @@ function GlassesModel({ modelPath, landmarksRef, videoRef }: GlassesModelProps) 
 
   return (
     <group ref={groupRef}>
-      {/* Centering primitive at model's geometric center */}
-      <primitive
-        object={gltf.scene}
-        position={[-modelCenter.x, -modelCenter.y, -modelCenter.z]}
-      />
+      {/* Inner group: per-model orientation correction (fixes GLB export axes) */}
+      <group rotation={rotOffset}>
+        <primitive
+          object={gltf.scene}
+          position={[-modelCenter.x, -modelCenter.y, -modelCenter.z]}
+        />
+      </group>
     </group>
   )
 }
@@ -136,9 +139,10 @@ interface GlassesOverlayProps {
   modelPath: string | null
   landmarksRef: React.MutableRefObject<FaceLandmarkerResult | null>
   videoRef: React.RefObject<HTMLVideoElement | null>
+  rotOffset: [number, number, number]
 }
 
-export default function GlassesOverlay({ modelPath, landmarksRef, videoRef }: GlassesOverlayProps) {
+export default function GlassesOverlay({ modelPath, landmarksRef, videoRef, rotOffset }: GlassesOverlayProps) {
   return (
     <Canvas
       style={{
@@ -161,7 +165,7 @@ export default function GlassesOverlay({ modelPath, landmarksRef, videoRef }: Gl
       <directionalLight position={[0, -3, 3]} intensity={0.4} />
       {modelPath && (
         <Suspense fallback={null}>
-          <GlassesModel modelPath={modelPath} landmarksRef={landmarksRef} videoRef={videoRef} />
+          <GlassesModel modelPath={modelPath} landmarksRef={landmarksRef} videoRef={videoRef} rotOffset={rotOffset} />
         </Suspense>
       )}
     </Canvas>

@@ -144,7 +144,7 @@ export default function VirtualTryOn() {
           />
 
           {/* Three.js glasses overlay */}
-          {cameraReady && <GlassesOverlay modelPath={selectedGlasses?.modelPath ?? null} landmarksRef={landmarksRef} videoRef={videoRef} />}
+          {cameraReady && <GlassesOverlay modelPath={selectedGlasses?.modelPath ?? null} landmarksRef={landmarksRef} videoRef={videoRef} rotOffset={selectedGlasses?.rotOffset ?? [0, 0, 0]} />}
 
           {/* Loading badge */}
           {isLoading && cameraReady && (
