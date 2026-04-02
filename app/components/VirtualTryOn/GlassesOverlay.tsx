@@ -73,7 +73,14 @@ function GlassesModel({ modelPath, landmarksRef, videoRef }: GlassesModelProps) 
 
     const cx = (L.x + R.x) / 2
     const cy = (L.y + R.y) / 2
-    const eyeDist = Math.hypot(R.x - L.x, R.y - L.y)
+
+    // Use 3D eye distance (stable across yaw rotations).
+    // MediaPipe z has the same scale as x (normalized to face width).
+    // When the head turns, the 2D projected distance shrinks but the 3D stays constant.
+    const W_vw = vw * s
+    const lz = leftOuter.z * W_vw
+    const rz = rightOuter.z * W_vw
+    const eyeDist = Math.hypot(R.x - L.x, R.y - L.y, rz - lz)
 
     const scale = (eyeDist * GLASSES_SCALE) / modelWidth
 
