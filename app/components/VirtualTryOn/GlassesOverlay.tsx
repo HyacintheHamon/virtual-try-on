@@ -84,20 +84,41 @@ function GlassesModel({ modelPath, landmarksRef, videoRef }: GlassesModelProps) 
 
     const scale = (eyeDist * GLASSES_SCALE) / modelWidth
 
-    const rotZ = Math.atan2(R.y - L.y, R.x - L.x)
+    // ── Rotation from MediaPipe facial transformation matrix ──────────────────
+    // The matrix maps canonical face model → camera space (column-major, right-hand).
+    // MediaPipe image space: X right, Y down, Z out of screen.
+    // Three.js convention (orthographic camera looking at -Z): X right, Y up, Z toward viewer.
+    // Mapping: rotX_three = -rotX_mp, rotY_three = -rotY_mp, rotZ_three = rotZ_mp
+    let rotX = 0, rotY = 0, rotZ = 0
 
-    const noseTip = lm[4]
-    const eyeMidX_lm = (leftOuter.x + rightOuter.x) / 2
-    const rotY = -(noseTip.x - eyeMidX_lm) * Math.PI * 1.8
-
-    const eyeMidY_lm = (leftOuter.y + rightOuter.y) / 2
-    const rotX = (noseTip.y - eyeMidY_lm) * Math.PI * 0.6 + MODEL_ROT_OFFSET.x
+    const matData = result.facialTransformationMatrixes?.[0]?.data
+    if (matData && matData.length === 16) {
+      const m = new THREE.Matrix4().fromArray(Array.from(matData))
+      const euler = new THREE.Euler().setFromRotationMatrix(m, 'YXZ')
+      rotX = -euler.x
+      rotY = -euler.y
+      rotZ =  euler.z
+    } else {
+      // Fallback: estimate from landmarks
+      const noseTip   = lm[4]
+      const eyeMidX   = (leftOuter.x + rightOuter.x) / 2
+      const eyeMidY   = (leftOuter.y + rightOuter.y) / 2
+      rotY = -(noseTip.x - eyeMidX) * Math.PI * 1.8
+      rotX =  (noseTip.y - eyeMidY) * Math.PI * 0.6
+      rotZ =  Math.atan2(R.y - L.y, R.x - L.x)
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     const offsetY = -eyeDist * GLASSES_Y_OFFSET
 
     groupRef.current.position.set(cx, cy + offsetY, 0)
     groupRef.current.scale.setScalar(scale)
-    groupRef.current.rotation.set(rotX, rotY + MODEL_ROT_OFFSET.y, rotZ + MODEL_ROT_OFFSET.z)
+    groupRef.current.rotation.set(
+      rotX + MODEL_ROT_OFFSET.x,
+      rotY + MODEL_ROT_OFFSET.y,
+      rotZ + MODEL_ROT_OFFSET.z,
+      'YXZ',
+    )
   })
 
   return (

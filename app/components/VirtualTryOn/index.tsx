@@ -10,6 +10,37 @@ import { GLASSES_CATALOG } from '@/app/data/glasses'
 // Load R3F canvas client-side only (no SSR)
 const GlassesOverlay = dynamic(() => import('./GlassesOverlay'), { ssr: false })
 
+// ─── Iris PD helpers (MediaPipe Iris paper, 2020) ─────────────────────────────
+// LEFT_IRIS : [468-472]  RIGHT_IRIS : [473-477]
+const IRIS_DIAMETER_MM = 11.7 // average adult iris diameter (±0.5 mm)
+
+type NormPoint = { x: number; y: number }
+
+function averagePoint(pts: NormPoint[]): NormPoint {
+  return {
+    x: pts.reduce((a, p) => a + p.x, 0) / pts.length,
+    y: pts.reduce((a, p) => a + p.y, 0) / pts.length,
+  }
+}
+
+function maxDiameter(pts: NormPoint[]): number {
+  let max = 0
+  for (let i = 0; i < pts.length; i++)
+    for (let j = i + 1; j < pts.length; j++) {
+      const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y)
+      if (d > max) max = d
+    }
+  return max
+}
+
+// Pinhole model: focal ≈ 0.75 × videoWidth (empirically calibrated for mobile)
+function estimateFocalPx(video: HTMLVideoElement | null): number {
+  const track = (video?.srcObject as MediaStream | null)?.getVideoTracks?.()[0]
+  const w = track?.getSettings?.().width ?? video?.videoWidth ?? 1280
+  return w * 0.75
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 export default function VirtualTryOn() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const landmarksRef = useRef<FaceLandmarkerResult | null>(null)
@@ -49,29 +80,44 @@ export default function VirtualTryOn() {
     }
   }, [])
 
-  // Receive landmarks from MediaPipe
+  // Receive landmarks from MediaPipe — depth-from-iris PD (MediaPipe Iris paper)
   const handleLandmarks = useCallback((result: FaceLandmarkerResult) => {
     landmarksRef.current = result
 
-    // Pupillary distance estimation
-    // Iris landmarks: 468 = right iris center, 473 = left iris center
-    // Reference: outer eye corners 33 and 263 → ~90 mm average
     const lm = result.faceLandmarks?.[0]
-    if (!lm || lm.length < 478) return
+    if (!lm || lm.length < 478) { setPdMm(null); return }
 
-    const rightIris = lm[468]
-    const leftIris = lm[473]
-    const rightOuter = lm[33]
-    const leftOuter = lm[263]
+    // 5 points per iris
+    const leftIris  = [468, 469, 470, 471, 472].map(i => lm[i])
+    const rightIris = [473, 474, 475, 476, 477].map(i => lm[i])
 
-    const irisDist = Math.hypot(leftIris.x - rightIris.x, leftIris.y - rightIris.y)
-    const outerEyeDist = Math.hypot(leftOuter.x - rightOuter.x, leftOuter.y - rightOuter.y)
+    const leftCenter  = averagePoint(leftIris)
+    const rightCenter = averagePoint(rightIris)
 
-    if (outerEyeDist > 0) {
-      const pd = Math.round((irisDist / outerEyeDist) * 90)
-      setPdMm(pd)
-    }
-  }, [])
+    // Iris diameter in normalised coords → convert to pixels
+    const vw = videoRef.current?.videoWidth ?? 1280
+    const leftDiamPx  = maxDiameter(leftIris)  * vw
+    const rightDiamPx = maxDiameter(rightIris) * vw
+    const avgDiamPx   = (leftDiamPx + rightDiamPx) / 2
+
+    if (avgDiamPx < 5) return // detection too unstable
+
+    // Pinhole: distanceFace = focalPx × IRIS_MM / irisPixelDiam
+    const focalPx       = estimateFocalPx(videoRef.current)
+    const distanceMm    = (focalPx * IRIS_DIAMETER_MM) / avgDiamPx
+
+    // PD = irisDistPx × distanceMm / focalPx
+    //    = irisDistPx / avgDiamPx × IRIS_DIAMETER_MM  (focal cancels)
+    const irisDistPx    = Math.hypot(rightCenter.x - leftCenter.x, rightCenter.y - leftCenter.y) * vw
+    const pdCalculated  = (irisDistPx * distanceMm) / focalPx
+
+    // Exponential moving average (30 % weight on new frame → smooth without lag)
+    setPdMm(prev =>
+      prev === null
+        ? Math.round(pdCalculated)
+        : Math.round(prev * 0.7 + pdCalculated * 0.3)
+    )
+  }, [videoRef])
 
   const { isLoading } = useFaceLandmarker(videoRef, handleLandmarks, cameraReady)
 
