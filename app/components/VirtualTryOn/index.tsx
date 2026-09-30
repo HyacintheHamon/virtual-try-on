@@ -8,6 +8,9 @@ import GlassesList from './GlassesList'
 import { GLASSES_CATALOG } from '@/app/data/glasses'
 import type { TrackingFrame } from '@/app/lib/face-tracking'
 import { estimatePupillaryDistance } from '@/app/lib/pupillary-distance'
+import FitControls from './FitControls'
+import type { FitAdjustment } from './FitControls'
+import type { WearerCalibrationState } from '@/app/lib/wearer-scale-calibration'
 
 // Load R3F canvas client-side only (no SSR)
 const GlassesOverlay = dynamic(() => import('./GlassesOverlay'), { ssr: false })
@@ -28,6 +31,16 @@ function TryOnSession({ onRetry }: { onRetry: () => void }) {
   const [faceDetected, setFaceDetected] = useState(false)
   const [cameraReady, setCameraReady] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
+  const [knownPdMm, setKnownPdMm] = useState<number | null>(null)
+  const [calibrationRequest, setCalibrationRequest] = useState(0)
+  const [adjustment, setAdjustment] = useState<FitAdjustment>({ heightMm: 0, depthMm: 0 })
+  const [calibration, setCalibration] = useState<WearerCalibrationState | null>(null)
+  const [poseTracking, setPoseTracking] = useState(true)
+  const handleKnownPdChange = useCallback((value: number | null) => {
+    setCalibration(null)
+    setKnownPdMm(value)
+    setCalibrationRequest(request => request + 1)
+  }, [])
 
   const selectedGlasses = GLASSES_CATALOG.find((g) => g.id === selectedId) ?? null
 
@@ -145,7 +158,9 @@ function TryOnSession({ onRetry }: { onRetry: () => void }) {
           {/* Three.js glasses overlay */}
           {cameraReady && selectedGlasses && !error && (
             <GlassesOverlay modelPath={selectedGlasses.modelPath} landmarksRef={landmarksRef}
-              videoRef={videoRef} invalidateTrackingRef={invalidateTrackingRef} rotOffset={selectedGlasses.rotOffset ?? [0, 0, 0]} />
+              videoRef={videoRef} invalidateTrackingRef={invalidateTrackingRef} rotOffset={selectedGlasses.rotOffset ?? [0, 0, 0]}
+              fitting={selectedGlasses.fitting} knownPdMm={knownPdMm} calibrationRequest={calibrationRequest} adjustment={adjustment}
+              onCalibrationChange={setCalibration} onPoseStatusChange={setPoseTracking} />
           )}
 
           {/* Loading badge */}
@@ -163,6 +178,11 @@ function TryOnSession({ onRetry }: { onRetry: () => void }) {
           {cameraReady && !isLoading && !faceDetected && !error && (
             <div role="status" className="absolute top-4 left-1/2 -translate-x-1/2 whitespace-nowrap bg-black/60 text-white text-xs px-3 py-1.5 rounded-full">
               Position your face in the camera
+            </div>
+          )}
+          {cameraReady && !isLoading && faceDetected && selectedGlasses && !poseTracking && !error && (
+            <div role="status" className="absolute top-4 left-1/2 -translate-x-1/2 whitespace-nowrap bg-black/60 text-white text-xs px-3 py-1.5 rounded-full">
+              Keep your face clearly visible
             </div>
           )}
           {error && (
@@ -186,9 +206,9 @@ function TryOnSession({ onRetry }: { onRetry: () => void }) {
               <span className="flex-1 text-white text-sm font-medium truncate">
                 {selectedGlasses.name}
               </span>
-              <button className="bg-white text-black text-sm font-semibold px-4 py-2 rounded-full hover:bg-gray-100 transition-colors">
+              {!selectedGlasses.isReference && <button className="bg-white text-black text-sm font-semibold px-4 py-2 rounded-full hover:bg-gray-100 transition-colors">
                 Add to cart
-              </button>
+              </button>}
             </div>
           )}
         </div>
@@ -205,6 +225,11 @@ function TryOnSession({ onRetry }: { onRetry: () => void }) {
             <span className="text-sm text-gray-400">—</span>
           )}
         </div>
+
+        <FitControls enabled={!!selectedGlasses && cameraReady && !error}
+          measuredModel={!!selectedGlasses?.fitting} knownPdMm={knownPdMm}
+          onKnownPdChange={handleKnownPdChange} adjustment={adjustment} onAdjustmentChange={setAdjustment}
+          calibration={calibration} />
 
         {/* ── Liste lunettes — flex-1 : absorbe tout l'espace vertical restant ── */}
         <div className="flex-1 min-h-0 overflow-y-auto">
