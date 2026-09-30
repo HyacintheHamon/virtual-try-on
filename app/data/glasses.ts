@@ -112,7 +112,7 @@ export const GLASSES_CATALOG: Glasses[] = [
     modelPath: '/models/glasses-10.glb',
     price: 259,
     color: '#2c2c2c',
-    rotOffset: [0, 0, 0],
+    rotOffset: [0, Math.PI, 0],
   },
   {
     id: 'glasses-11b',

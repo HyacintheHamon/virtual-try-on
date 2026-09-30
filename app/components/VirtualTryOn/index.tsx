@@ -6,120 +6,120 @@ import type { FaceLandmarkerResult } from '@mediapipe/tasks-vision'
 import { useFaceLandmarker } from '@/app/hooks/useFaceLandmarker'
 import GlassesList from './GlassesList'
 import { GLASSES_CATALOG } from '@/app/data/glasses'
+import type { TrackingFrame } from '@/app/lib/face-tracking'
+import { estimatePupillaryDistance } from '@/app/lib/pupillary-distance'
 
 // Load R3F canvas client-side only (no SSR)
 const GlassesOverlay = dynamic(() => import('./GlassesOverlay'), { ssr: false })
 
-// ─── Iris PD helpers (MediaPipe Iris paper, 2020) ─────────────────────────────
-// LEFT_IRIS : [468-472]  RIGHT_IRIS : [473-477]
-const IRIS_DIAMETER_MM = 11.7 // average adult iris diameter (±0.5 mm)
-
-type NormPoint = { x: number; y: number }
-
-function averagePoint(pts: NormPoint[]): NormPoint {
-  return {
-    x: pts.reduce((a, p) => a + p.x, 0) / pts.length,
-    y: pts.reduce((a, p) => a + p.y, 0) / pts.length,
-  }
-}
-
-function maxDiameter(pts: NormPoint[]): number {
-  let max = 0
-  for (let i = 0; i < pts.length; i++)
-    for (let j = i + 1; j < pts.length; j++) {
-      const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y)
-      if (d > max) max = d
-    }
-  return max
-}
-
-// Pinhole model: focal ≈ 0.75 × videoWidth (empirically calibrated for mobile)
-function estimateFocalPx(video: HTMLVideoElement | null): number {
-  const track = (video?.srcObject as MediaStream | null)?.getVideoTracks?.()[0]
-  const w = track?.getSettings?.().width ?? video?.videoWidth ?? 1280
-  return w * 0.75
-}
-// ─────────────────────────────────────────────────────────────────────────────
-
 export default function VirtualTryOn() {
+  const [session, setSession] = useState(0)
+  return <TryOnSession key={session} onRetry={() => setSession(value => value + 1)} />
+}
+
+function TryOnSession({ onRetry }: { onRetry: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const landmarksRef = useRef<FaceLandmarkerResult | null>(null)
+  const landmarksRef = useRef<TrackingFrame | null>(null)
+  const invalidateTrackingRef = useRef<(() => void) | null>(null)
+  const pdEstimateRef = useRef<number | null>(null)
+  const lastPdUpdateRef = useRef(-Infinity)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [pdMm, setPdMm] = useState<number | null>(null)
+  const [faceDetected, setFaceDetected] = useState(false)
   const [cameraReady, setCameraReady] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
 
   const selectedGlasses = GLASSES_CATALOG.find((g) => g.id === selectedId) ?? null
 
-  // Start webcam
   useEffect(() => {
+    let cancelled = false
     let stream: MediaStream | null = null
+    const video = videoRef.current
 
-    navigator.mediaDevices
-      .getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-      })
-      .then((s) => {
-        stream = s
-        if (videoRef.current) {
-          videoRef.current.srcObject = s
-          videoRef.current.play().catch((err) => {
-            // AbortError is expected during hot-module reloads
-            if (err.name !== 'AbortError') {
-              setCameraError('Failed to start camera stream.')
-            }
-          })
+    function onEnded() {
+      if (cancelled) return
+      landmarksRef.current = null
+      setPdMm(null)
+      setFaceDetected(false)
+      setCameraReady(false)
+      setCameraError('Camera disconnected. Please reconnect it and retry.')
+    }
+
+    async function startCamera() {
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error('Camera access requires HTTPS and a supported browser.')
         }
-      })
-      .catch(() => {
-        setCameraError('Camera access denied. Please allow camera permissions.')
-      })
+        const acquired = await navigator.mediaDevices.getUserMedia({
+          audio: false,
+          video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+        })
+        // Strict Mode/unmount can happen while the permission dialog is open.
+        if (cancelled || !video) {
+          acquired.getTracks().forEach(track => track.stop())
+          return
+        }
+        stream = acquired
+        stream.getVideoTracks().forEach(track => track.addEventListener('ended', onEnded))
+        video.srcObject = stream
+        await video.play()
+        if (!cancelled) setCameraReady(true)
+      } catch (error) {
+        stream?.getTracks().forEach(track => track.stop())
+        if (cancelled) return
+        const name = error instanceof Error ? error.name : ''
+        const message = name === 'NotAllowedError'
+          ? 'Camera access denied. Please allow camera permissions and retry.'
+          : name === 'NotFoundError'
+            ? 'No camera found. Connect a camera and retry.'
+            : name === 'NotReadableError'
+              ? 'Your camera is busy. Close other camera apps and retry.'
+              : error instanceof Error ? error.message : 'Unable to start the camera. Please retry.'
+        setCameraError(message)
+      }
+    }
 
+    void startCamera()
     return () => {
-      stream?.getTracks().forEach((t) => t.stop())
+      cancelled = true
+      landmarksRef.current = null
+      stream?.getTracks().forEach(track => {
+        track.removeEventListener('ended', onEnded)
+        track.stop()
+      })
+      if (video && video.srcObject === stream) {
+        video.pause()
+        video.srcObject = null
+      }
     }
   }, [])
 
-  // Receive landmarks from MediaPipe — depth-from-iris PD (MediaPipe Iris paper)
-  const handleLandmarks = useCallback((result: FaceLandmarkerResult) => {
-    landmarksRef.current = result
+  const handleLandmarks = useCallback((result: FaceLandmarkerResult | null, timestampMs: number) => {
+    const detected = !!result?.faceLandmarks[0]
+    landmarksRef.current = detected && result ? { result, timestampMs } : null
+    invalidateTrackingRef.current?.()
+    setFaceDetected(detected)
 
-    const lm = result.faceLandmarks?.[0]
-    if (!lm || lm.length < 478) { setPdMm(null); return }
+    const estimate = result && detected
+      ? estimatePupillaryDistance(result, videoRef.current?.videoWidth ?? 0, videoRef.current?.videoHeight ?? 0)
+      : null
+    if (estimate === null) {
+      pdEstimateRef.current = null
+      lastPdUpdateRef.current = -Infinity
+      setPdMm(null)
+      return
+    }
+    // Smooth unrounded values, then publish at most ~6 times/sec to React.
+    const previous = pdEstimateRef.current
+    pdEstimateRef.current = previous === null ? estimate : previous + (estimate - previous) * 0.2
+    if (timestampMs - lastPdUpdateRef.current >= 150) {
+      lastPdUpdateRef.current = timestampMs
+      setPdMm(Math.round(pdEstimateRef.current))
+    }
+  }, [])
 
-    // 5 points per iris
-    const leftIris  = [468, 469, 470, 471, 472].map(i => lm[i])
-    const rightIris = [473, 474, 475, 476, 477].map(i => lm[i])
-
-    const leftCenter  = averagePoint(leftIris)
-    const rightCenter = averagePoint(rightIris)
-
-    // Iris diameter in normalised coords → convert to pixels
-    const vw = videoRef.current?.videoWidth ?? 1280
-    const leftDiamPx  = maxDiameter(leftIris)  * vw
-    const rightDiamPx = maxDiameter(rightIris) * vw
-    const avgDiamPx   = (leftDiamPx + rightDiamPx) / 2
-
-    if (avgDiamPx < 5) return // detection too unstable
-
-    // Pinhole: distanceFace = focalPx × IRIS_MM / irisPixelDiam
-    const focalPx       = estimateFocalPx(videoRef.current)
-    const distanceMm    = (focalPx * IRIS_DIAMETER_MM) / avgDiamPx
-
-    // PD = irisDistPx × distanceMm / focalPx
-    //    = irisDistPx / avgDiamPx × IRIS_DIAMETER_MM  (focal cancels)
-    const irisDistPx    = Math.hypot(rightCenter.x - leftCenter.x, rightCenter.y - leftCenter.y) * vw
-    const pdCalculated  = (irisDistPx * distanceMm) / focalPx
-
-    // Exponential moving average (30 % weight on new frame → smooth without lag)
-    setPdMm(prev =>
-      prev === null
-        ? Math.round(pdCalculated)
-        : Math.round(prev * 0.7 + pdCalculated * 0.3)
-    )
-  }, [videoRef])
-
-  const { isLoading } = useFaceLandmarker(videoRef, handleLandmarks, cameraReady)
+  const { isLoading, error: trackingError } = useFaceLandmarker(videoRef, handleLandmarks, cameraReady)
+  const error = cameraError ?? trackingError
 
   return (
     // Fond blanc plein écran, contenu centré horizontalement
@@ -138,25 +138,39 @@ export default function VirtualTryOn() {
             autoPlay
             playsInline
             muted
-            onCanPlay={() => setCameraReady(true)}
             className="absolute inset-0 w-full h-full object-cover"
             style={{ transform: 'scaleX(-1)' }}
           />
 
           {/* Three.js glasses overlay */}
-          {cameraReady && <GlassesOverlay modelPath={selectedGlasses?.modelPath ?? null} landmarksRef={landmarksRef} videoRef={videoRef} rotOffset={selectedGlasses?.rotOffset ?? [0, 0, 0]} />}
+          {cameraReady && selectedGlasses && !error && (
+            <GlassesOverlay modelPath={selectedGlasses.modelPath} landmarksRef={landmarksRef}
+              videoRef={videoRef} invalidateTrackingRef={invalidateTrackingRef} rotOffset={selectedGlasses.rotOffset ?? [0, 0, 0]} />
+          )}
 
           {/* Loading badge */}
-          {isLoading && cameraReady && (
+          {isLoading && cameraReady && !error && (
             <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/60 text-white text-xs px-3 py-1.5 rounded-full backdrop-blur-sm">
               Loading face detection…
             </div>
           )}
 
-          {/* Camera error */}
-          {cameraError && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/80 text-white text-sm text-center px-6">
-              {cameraError}
+          {!cameraReady && !error && (
+            <div role="status" className="absolute inset-0 flex items-center justify-center text-white text-sm">
+              Starting camera…
+            </div>
+          )}
+          {cameraReady && !isLoading && !faceDetected && !error && (
+            <div role="status" className="absolute top-4 left-1/2 -translate-x-1/2 whitespace-nowrap bg-black/60 text-white text-xs px-3 py-1.5 rounded-full">
+              Position your face in the camera
+            </div>
+          )}
+          {error && (
+            <div role="alert" className="absolute inset-0 z-10 flex flex-col gap-4 items-center justify-center bg-black/80 text-white text-sm text-center px-6">
+              <p>{error}</p>
+              <button onClick={onRetry} className="rounded-full bg-white text-black px-4 py-2 font-medium">
+                Retry
+              </button>
             </div>
           )}
 
@@ -181,10 +195,10 @@ export default function VirtualTryOn() {
 
         {/* ── PD bar ── */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 flex-shrink-0">
-          <span className="text-sm font-medium text-gray-900">My Pupillary Distance:</span>
+          <span className="text-sm font-medium text-gray-900">Estimated pupillary distance:</span>
           {pdMm ? (
             <>
-              <span className="text-sm font-semibold text-gray-900">{pdMm} mm</span>
+              <span className="text-sm font-semibold text-gray-900">≈ {pdMm} mm</span>
               <PDIndicator value={pdMm} />
             </>
           ) : (
