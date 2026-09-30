@@ -1,91 +1,122 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useState } from 'react'
 import type { FaceLandmarkerResult } from '@mediapipe/tasks-vision'
+import { TRACKING_TIMEOUT_MS } from '@/app/lib/face-tracking'
 
-const WASM_URL =
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm'
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task'
+import { createTrackingEngine } from '@/app/lib/tracking-engine'
+import type { TrackingEngine } from '@/app/lib/tracking-engine'
+
+const FRAME_INTERVAL_MS = 1000 / 60
 
 export function useFaceLandmarker(
   videoRef: React.RefObject<HTMLVideoElement | null>,
-  onResult: (result: FaceLandmarkerResult) => void,
+  onResult: (result: FaceLandmarkerResult | null, timestampMs: number) => void,
   enabled = true,
 ) {
-  const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const onResultRef = useRef(onResult)
-  onResultRef.current = onResult
+  const [state, setState] = useState({ isLoading: true, error: null as string | null })
+  const publish = useEffectEvent(onResult)
 
   useEffect(() => {
     if (!enabled) return
 
     let cancelled = false
-    let rafId: number
+    let rafId = 0
+    let engine: TrackingEngine | null = null
+    const abort = new AbortController()
+    let hasResult = false
+    let lastResultTime = -Infinity
+
+    function clearResult(now: number) {
+      if (hasResult) {
+        hasResult = false
+        publish(null, now)
+      }
+    }
+
+    function onVisibilityChange() {
+      if (document.hidden) clearResult(performance.now())
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     async function init() {
       try {
-        const { FaceLandmarker, FilesetResolver } = await import(
-          '@mediapipe/tasks-vision'
-        )
-        const vision = await FilesetResolver.forVisionTasks(WASM_URL)
-        const landmarker = await FaceLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath: MODEL_URL,
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numFaces: 1,
-          outputFacialTransformationMatrixes: true,
-        })
-
+        // Yield before synchronizing external-resource state with React.
+        await Promise.resolve()
+        if (cancelled) return
+        setState({ isLoading: true, error: null })
+        engine = await createTrackingEngine(abort.signal)
         if (cancelled) {
-          landmarker.close()
+          engine.close()
           return
         }
 
-        setIsLoading(false)
-
+        setState({ isLoading: false, error: null })
         let lastVideoTime = -1
-        function detect() {
-          if (cancelled) return
-          const video = videoRef.current
-          if (
-            video &&
-            video.readyState >= 2 &&
-            !video.paused &&
-            video.videoWidth > 0 &&
-            video.currentTime !== lastVideoTime
-          ) {
-            lastVideoTime = video.currentTime
-            try {
-              const result = landmarker.detectForVideo(video, performance.now())
-              onResultRef.current(result)
-            } catch {
-              // ignore per-frame errors
-            }
-          }
+        let lastDetectionTime = -Infinity
+        let consecutiveErrors = 0
+        let inFlight = false
+
+        async function detect(now: number) {
+          if (cancelled || !engine) return
           rafId = requestAnimationFrame(detect)
+          const video = videoRef.current
+          if (document.hidden || !video || video.paused || video.ended ||
+              video.readyState < 2 || video.videoWidth === 0 || video.videoHeight === 0) {
+            clearResult(now)
+          } else if (!inFlight && video.currentTime !== lastVideoTime && now - lastDetectionTime >= FRAME_INTERVAL_MS) {
+            lastVideoTime = video.currentTime
+            lastDetectionTime = now
+            inFlight = true
+            try {
+              const result = await engine.detect(video, now)
+              if (cancelled) return
+              if (document.hidden || video.paused || performance.now() - now > TRACKING_TIMEOUT_MS) {
+                clearResult(performance.now())
+                return
+              }
+              lastResultTime = now
+              consecutiveErrors = 0
+              hasResult = true
+              publish(result, now)
+            } catch (error) {
+              if (cancelled) return
+              clearResult(now)
+              if (++consecutiveErrors >= 5) {
+                console.error('Face tracking stopped after repeated detection failures.', error)
+                setState({ isLoading: false, error: 'Face tracking stopped. Please retry.' })
+                cancelAnimationFrame(rafId)
+                engine.close()
+                engine = null
+                return
+              }
+            } finally {
+              inFlight = false
+            }
+          } else if (now - lastResultTime > TRACKING_TIMEOUT_MS) {
+            clearResult(now)
+          }
         }
 
         rafId = requestAnimationFrame(detect)
-      } catch (err) {
+      } catch (error) {
         if (!cancelled) {
-          console.error('FaceLandmarker init error:', err)
-          setError('Failed to load face detection model')
-          setIsLoading(false)
+          console.error('FaceLandmarker init error:', error)
+          setState({ isLoading: false, error: 'Unable to load face tracking. Check your connection and retry.' })
         }
       }
     }
 
-    init()
-
+    void init()
     return () => {
       cancelled = true
       cancelAnimationFrame(rafId)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      abort.abort()
+      engine?.close()
+      engine = null
     }
   }, [enabled, videoRef])
 
-  return { isLoading, error }
+  return { isLoading: enabled && state.isLoading, error: enabled ? state.error : null }
 }
