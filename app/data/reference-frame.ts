@@ -7,4 +7,3 @@ export const REFERENCE_FRAME_FITTING: GlassesFitting = {
   bridgeAnchor: [0, 0, 0],
   hingeAnchors: { left: [-6.75, 0.14, -0.33], right: [6.75, 0.14, -0.33] },
 }
-
