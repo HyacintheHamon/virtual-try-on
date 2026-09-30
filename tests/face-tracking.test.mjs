@@ -183,3 +183,72 @@ test('lens anchor stays ahead of the nose bridge while the face mask preserves i
   assert.ok(positions[168*3+2] < 0, 'The nose bridge must sit behind the front frame anchor')
   near(positions[168*3+2], -0.04)
 })
+
+test('frame stays attached to the measured bridge through bilateral head turns and combined rotations', () => {
+  for (const euler of [
+    new Euler(), new Euler(0, -0.7, 0), new Euler(0, 0.7, 0),
+    new Euler(-0.35, 0, 0), new Euler(0.35, 0, 0),
+    new Euler(0, 0, -0.45), new Euler(0.2, 0.6, -0.3, 'YXZ'),
+  ]) {
+    for (const withMatrix of [true, false]) {
+      for (const dimensions of [video, { width: 720, height: 1280 }]) {
+        const result = face(euler, withMatrix)
+        const bridge = new Vector3(12, 18, 40).applyEuler(euler)
+        result.faceLandmarks[0][168] = {
+          x: 0.5 + bridge.x / video.width, y: 0.5 - bridge.y / video.height, z: -bridge.z / video.width,
+        }
+        // Nonzero image translation and shared depth verify that the attachment
+        // also uses the same eye-relative Z origin as the face occlusion mask.
+        result.faceLandmarks[0] = result.faceLandmarks[0].map(lm => ({
+          x: 0.5 + ((lm.x - 0.5) * video.width + 45) / dimensions.width,
+          y: 0.5 - ((0.5 - lm.y) * video.height - 28) / dimensions.height,
+          z: -(-lm.z * video.width + 70) / dimensions.width,
+        }))
+        const pose = getFacePose(result, dimensions, viewport)
+        const positions = new Float32Array(468 * 3)
+        assert.equal(updateFaceOcclusionPositions(result, dimensions, viewport, pose, positions), true)
+        // The measured bridge always touches the same point on the frame,
+        // independently of which way the face turns or the camera aspect ratio.
+        near(positions[168 * 3], 0)
+        near(positions[168 * 3 + 1], 0.1)
+        near(positions[168 * 3 + 2], -0.04)
+        const reconstructed = new Vector3().fromArray(positions, 168 * 3)
+          .multiplyScalar(pose.eyeDistance).applyQuaternion(pose.rotation).add(pose.position)
+        const expected = landmarkToWorld(result.faceLandmarks[0][168], dimensions, viewport)
+        const eyes = [33, 263].map(index => landmarkToWorld(result.faceLandmarks[0][index], dimensions, viewport))
+        expected.z -= (eyes[0].z + eyes[1].z) / 2
+        near(reconstructed.distanceTo(expected), 0, 1e-5)
+      }
+    }
+  }
+})
+
+test('missing or invalid bridge retains the eye-based fallback placement', () => {
+  for (const bridge of [undefined, { x: NaN, y: 0.5, z: 0 }, { x: 0.5, y: 0.5, z: Infinity }]) {
+    const result = face(new Euler(0.2, -0.5, 0.3))
+    result.faceLandmarks[0][168] = bridge
+    const pose = getFacePose(result, video, viewport)
+    const expected = new Vector3(0, -0.1, 0.29).multiplyScalar(pose.eyeDistance).applyQuaternion(pose.rotation)
+    near(pose.position.distanceTo(expected), 0)
+  }
+})
+
+test('rotation filter limits head-turn lag while still attenuating stationary angular jitter', () => {
+  for (const fps of [15, 30, 60]) {
+    const filter = new FacePoseSmoother()
+    filter.update(poseAt(0), 0)
+    let output
+    // A head turn at one radian per second should lag by less than 1.7 degrees.
+    for (let i = 1; i <= fps; i++) output = filter.update(poseAt(0, i / fps), i * 1000 / fps)
+    const lag = output.rotation.angleTo(poseAt(0, 1).rotation)
+    assert.ok(lag < 0.03, `${fps} FPS head-turn lag: ${lag} radians`)
+  }
+  const filter = new FacePoseSmoother()
+  filter.update(poseAt(0), 0)
+  let peakJitter = 0
+  for (let i = 1; i <= 120; i++) {
+    const output = filter.update(poseAt(0, i % 2 ? 0.01 : -0.01), i * 1000 / 30)
+    peakJitter = Math.max(peakJitter, output.rotation.angleTo(poseAt(0).rotation))
+  }
+  assert.ok(peakJitter < 0.004, `Stationary angular jitter: ${peakJitter} radians`)
+})
