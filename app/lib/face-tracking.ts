@@ -89,16 +89,16 @@ export function getFacePose(
   }
 
   const midpoint = leftWorld.add(rightWorld).multiplyScalar(0.5)
-  const normal = new Vector3(0, 0, 1).applyQuaternion(rotation)
   const bridge = landmarks[168]
-  // Fit in front of the actual nose bridge, not a fixed screen-space Z plane.
-  // This prevents the face depth mask from swallowing the lenses.
-  const bridgeDepth = validPoint(bridge)
-    ? Math.max(0, landmarkToWorld(bridge, video, viewport).sub(midpoint).dot(normal))
-    : eyeDistance * 0.25
-  const position = midpoint.clone()
-  position.z = 0
-  position.add(new Vector3(0, -eyeDistance * 0.1, bridgeDepth + eyeDistance * 0.04).applyQuaternion(rotation))
+  // Attach to the observed bridge in all three axes. Projecting only its depth
+  // onto the matrix normal discards its measured lateral/vertical displacement.
+  const position = validPoint(bridge)
+    ? landmarkToWorld(bridge, video, viewport)
+    : midpoint.clone().add(new Vector3(0, 0, eyeDistance * 0.25).applyQuaternion(rotation))
+  // The face mask uses the eyes' mean depth as its origin; keep the same origin
+  // here so changing the anchor cannot move the lenses inside the occluder.
+  position.z -= midpoint.z
+  position.add(new Vector3(0, -eyeDistance * 0.1, eyeDistance * 0.04).applyQuaternion(rotation))
   return { position, rotation, eyeDistance }
 }
 
@@ -140,7 +140,7 @@ export class FacePoseSmoother {
       this.angularSpeed += (this.previous.rotation.angleTo(target.rotation) / dt - this.angularSpeed) * derivativeAlpha
       this.scaleSpeed += ((Math.log(target.eyeDistance / this.previous.eyeDistance) / dt) - this.scaleSpeed) * derivativeAlpha
       this.pose.position.lerp(target.position, filterAlpha(1.8 + 3 * this.velocity.length(), dt))
-      this.pose.rotation.slerp(target.rotation, filterAlpha(2 + this.angularSpeed, dt))
+      this.pose.rotation.slerp(target.rotation, filterAlpha(2 + 4 * this.angularSpeed, dt))
       this.pose.eyeDistance += (target.eyeDistance - this.pose.eyeDistance) *
         filterAlpha(1.2 + Math.abs(this.scaleSpeed), dt)
       this.previous.position.copy(target.position)

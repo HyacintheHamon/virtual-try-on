@@ -7,6 +7,8 @@ import * as THREE from 'three'
 import { FacePoseSmoother, getFacePose, isTrackingFrameFresh, updateFaceOcclusionPositions } from '@/app/lib/face-tracking'
 import type { TrackingFrame } from '@/app/lib/face-tracking'
 import { FACE_TRIANGLES } from '@/app/data/face-triangles'
+import { createHeadOcclusionGeometry, updateHeadOcclusionPositions } from '@/app/lib/head-occlusion'
+import { FacePosePredictor } from '@/app/lib/pose-prediction'
 
 const GLASSES_SCALE = 1.55
 
@@ -21,6 +23,8 @@ function GlassesModel({ modelPath, landmarksRef, videoRef, rotOffset }: GlassesM
   const gltf = useGLTF(modelPath)
   const groupRef = useRef<THREE.Group>(null)
   const occluderRef = useRef<THREE.Mesh>(null)
+  const headOccluderRef = useRef<THREE.Mesh>(null)
+  const headGeometry = useMemo(() => createHeadOcclusionGeometry(), [])
   const faceGeometry = useMemo(() => {
     const geometry = new THREE.BufferGeometry()
     geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(468 * 3), 3).setUsage(THREE.DynamicDrawUsage))
@@ -28,9 +32,11 @@ function GlassesModel({ modelPath, landmarksRef, videoRef, rotOffset }: GlassesM
     return geometry
   }, [])
   useEffect(() => () => faceGeometry.dispose(), [faceGeometry])
+  useEffect(() => () => headGeometry.dispose(), [headGeometry])
   const smoother = useMemo(() => new FacePoseSmoother(), [])
+  const predictor = useMemo(() => new FacePosePredictor(), [])
   const lastFrame = useRef<TrackingFrame | null>(null)
-  const { size } = useThree()
+  const { size, invalidate } = useThree()
   const [rx, ry, rz] = rotOffset
 
   const { model, modelWidth } = useMemo(() => {
@@ -59,10 +65,12 @@ function GlassesModel({ modelPath, landmarksRef, videoRef, rotOffset }: GlassesM
     if (!group) return
     const frame = landmarksRef.current
     const video = videoRef.current
-    if (!frame || !isTrackingFrameFresh(frame, performance.now()) ||
+    const now = performance.now()
+    if (!frame || !isTrackingFrameFresh(frame, now) ||
         !video || video.paused || video.ended || document.hidden) {
       group.visible = false
       smoother.reset()
+      predictor.reset()
       lastFrame.current = null
       return
     }
@@ -71,35 +79,49 @@ function GlassesModel({ modelPath, landmarksRef, videoRef, rotOffset }: GlassesM
     if (previousViewport.current !== dimensions) {
       previousViewport.current = dimensions
       smoother.reset()
+      predictor.reset()
       lastFrame.current = null
     }
-    if (lastFrame.current === frame) return
-    lastFrame.current = frame
+    if (lastFrame.current !== frame) {
+      lastFrame.current = frame
+      const target = getFacePose(frame.result,
+        { width: video.videoWidth, height: video.videoHeight }, size)
+      if (!target) {
+        group.visible = false
+        smoother.reset()
+        predictor.reset()
+        return
+      }
 
-    const target = getFacePose(frame.result,
-      { width: video.videoWidth, height: video.videoHeight }, size)
-    if (!target) {
-      group.visible = false
-      smoother.reset()
-      return
+      const positions = faceGeometry.getAttribute('position') as THREE.BufferAttribute
+      const hasOcclusion = updateFaceOcclusionPositions(frame.result,
+        { width: video.videoWidth, height: video.videoHeight }, size, target, positions.array as Float32Array)
+      positions.needsUpdate = true
+      if (occluderRef.current) occluderRef.current.visible = hasOcclusion
+      const headPositions = headGeometry.getAttribute('position') as THREE.BufferAttribute
+      const hasHeadOcclusion = hasOcclusion && updateHeadOcclusionPositions(
+        positions.array as Float32Array, headPositions.array as Float32Array)
+      if (hasHeadOcclusion) headPositions.needsUpdate = true
+      if (headOccluderRef.current) headOccluderRef.current.visible = hasHeadOcclusion
+
+      predictor.update(target, smoother.update(target, frame.timestampMs), frame.timestampMs)
     }
 
-    const positions = faceGeometry.getAttribute('position') as THREE.BufferAttribute
-    const hasOcclusion = updateFaceOcclusionPositions(frame.result,
-      { width: video.videoWidth, height: video.videoHeight }, size, target, positions.array as Float32Array)
-    positions.needsUpdate = true
-    if (occluderRef.current) occluderRef.current.visible = hasOcclusion
-
-    const pose = smoother.update(target, frame.timestampMs)
+    const pose = predictor.sample(now)
+    if (!pose) return
     group.position.copy(pose.position)
     group.quaternion.copy(pose.rotation)
     group.scale.setScalar(pose.eyeDistance)
     group.visible = true
+    if (predictor.needsRender(now)) invalidate()
   })
 
   return (
     <group ref={groupRef} visible={false}>
       <mesh ref={occluderRef} geometry={faceGeometry} renderOrder={-1} frustumCulled={false}>
+        <meshBasicMaterial colorWrite={false} depthWrite depthTest side={THREE.DoubleSide} />
+      </mesh>
+      <mesh ref={headOccluderRef} geometry={headGeometry} renderOrder={-1} frustumCulled={false} visible={false}>
         <meshBasicMaterial colorWrite={false} depthWrite depthTest side={THREE.DoubleSide} />
       </mesh>
       <group scale={GLASSES_SCALE / modelWidth} dispose={null}>
