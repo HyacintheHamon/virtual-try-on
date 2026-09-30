@@ -9,7 +9,7 @@ export const FACE_OVAL = [
 ] as const
 
 // Conservative skull proxy, not measured hair/ear geometry. Coordinates are
-// normalized by outer-eye distance, in the same local space as the face mask.
+// share the face mask's local units (eye distances or centimeters).
 const RINGS = [
   { depth: 0, scale: 1 },
   { depth: 0.4, scale: 1 },
@@ -43,8 +43,13 @@ export function createHeadOcclusionGeometry() {
 }
 
 /** Extend the already reconstructed face mask; no second coordinate transform. */
-export function updateHeadOcclusionPositions(face: Float32Array, head: Float32Array): boolean {
-  if (face.length < 468 * 3 || head.length < (REAR_POLE + 1) * 3) return false
+export function updateHeadOcclusionPositions(
+  face: Float32Array,
+  head: Float32Array,
+  referenceEyeDistance = 1,
+): boolean {
+  if (face.length < 468 * 3 || head.length < (REAR_POLE + 1) * 3 ||
+      !Number.isFinite(referenceEyeDistance) || referenceEyeDistance <= 0) return false
   let minX = Infinity, maxX = -Infinity
   let minY = Infinity, maxY = -Infinity
   let minZ = Infinity
@@ -57,7 +62,10 @@ export function updateHeadOcclusionPositions(face: Float32Array, head: Float32Ar
   }
   const width = maxX - minX, height = maxY - minY
   // Reject collapsed or implausibly large outlines in eye-distance units.
-  if (width < 0.5 || width > 3 || height < 0.5 || height > 4) return false
+  const normalizedWidth = width / referenceEyeDistance
+  const normalizedHeight = height / referenceEyeDistance
+  if (normalizedWidth < 0.5 || normalizedWidth > 3 ||
+      normalizedHeight < 0.5 || normalizedHeight > 4) return false
   const centerX = (minX + maxX) / 2
   const centerY = (minY + maxY) / 2
   const rearZ = minZ - width * 0.65
