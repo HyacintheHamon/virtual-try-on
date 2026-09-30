@@ -1,9 +1,14 @@
+import { REFERENCE_FRAME_FITTING } from './reference-frame'
+import type { GlassesFitting } from '@/app/lib/glasses-fitting'
+
 export interface Glasses {
   id: string
   name: string
   modelPath: string
-  price: number
+  price: number | null
   color: string
+  fitting?: GlassesFitting
+  isReference?: boolean
   // Per-model rotation correction (Euler XYZ, radians) applied BEFORE face tracking.
   // Use this to fix GLB export orientation issues.
   // Common fixes:
@@ -18,6 +23,15 @@ const PI  = Math.PI
 const PI2 = Math.PI / 2
 
 export const GLASSES_CATALOG: Glasses[] = [
+  {
+    id: 'reference-52-18',
+    name: 'Reference 52–18',
+    modelPath: '/models/reference-frame.glb',
+    price: null,
+    color: '#151918',
+    fitting: REFERENCE_FRAME_FITTING,
+    isReference: true,
+  },
   {
     id: 'aviator-classic',
     name: 'Aviator Classic',

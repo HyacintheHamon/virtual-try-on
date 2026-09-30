@@ -113,3 +113,25 @@ test('invalid, collapsed and implausible input rejects the shell without corrupt
     assert.equal(updateHeadOcclusionPositions(faceOval(), new Float32Array(head.length - 1)), false)
   } finally { geometry.dispose() }
 })
+
+test('centimeter geometry preserves the shell shape with a matching eye-distance reference', () => {
+  const geometry = createHeadOcclusionGeometry()
+  const head = geometry.attributes.position.array
+  const reference = head.slice()
+  const face = faceOval()
+  assert.equal(updateHeadOcclusionPositions(face, reference), true)
+  try {
+    for (const eyeDistance of [7.5, 9, 12]) {
+      const metricFace = face.map(value => value * eyeDistance)
+      assert.equal(updateHeadOcclusionPositions(metricFace, head, eyeDistance), true)
+      for (let index = 0; index < head.length; index++) {
+        assert.ok(Math.abs(head[index] / eyeDistance - reference[index]) < 1e-6)
+      }
+    }
+    for (const invalidReference of [0, -1, NaN, Infinity]) {
+      head.fill(42)
+      assert.equal(updateHeadOcclusionPositions(face, head, invalidReference), false)
+      assert.ok(head.every(value => value === 42))
+    }
+  } finally { geometry.dispose() }
+})

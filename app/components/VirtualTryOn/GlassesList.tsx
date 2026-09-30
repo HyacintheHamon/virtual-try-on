@@ -34,7 +34,7 @@ export default function GlassesList({ items, selectedId, onSelect, onClear }: Gl
             {/* Name */}
             <div className="flex-1 min-w-0">
               <p className="font-medium text-gray-900 text-sm truncate">{g.name}</p>
-              <p className="text-xs text-gray-400 mt-0.5">${g.price}</p>
+              <p className="text-xs text-gray-400 mt-0.5">{g.isReference ? 'Demo frame · 140 mm wide' : `$${g.price}`}</p>
             </div>
 
             {/* Action button */}
